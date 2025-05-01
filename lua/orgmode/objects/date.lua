@@ -989,7 +989,7 @@ function OrgDate:apply_repeater()
   if repeater:match('^%.%+%d+') then
     -- Strip the '.' from the repeater
     local offset = repeater:sub(2)
-    return date:set_todays_date():adjust(offset)
+    return date:set_todays_date():set_current_time():adjust(offset)
   end
 
   -- Repeater relative to deadline/scheduled date
