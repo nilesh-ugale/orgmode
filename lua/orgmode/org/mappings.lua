@@ -416,29 +416,76 @@ end
 
 function OrgMappings:_todo_change_state(direction)
   local headline = self.files:get_closest_headline()
-  local old_state = headline:get_todo()
+  local old_todo = headline:get_todo()
   local was_done = headline:is_done()
-  local changed = self:_change_todo_state(direction, true)
+  local todos = headline.file:get_todo_keywords()
+  local log_state_exit
+  local log_state_entry
+
+  local changed = self:_change_todo_state(direction, true, headline, todos)
 
   if not changed then
     return
   end
 
   local item = self.files:get_closest_headline()
-  EventManager.dispatch(events.TodoChanged:new(item, old_state, was_done))
+  local new_todo = item:get_todo()
+  EventManager.dispatch(events.TodoChanged:new(item, old_todo, was_done))
+  local indent = headline:get_indent()
+  local repeat_note_title = ('Insert note for state change from "%s" to "%s"'):format(old_todo, new_todo)
+
+  if old_todo then
+    log_state_exit = todos:find(old_todo).log_state_exit
+  else
+    log_state_exit = nil
+  end
+  if new_todo then
+    log_state_entry = todos:find(new_todo).log_state_entry
+  else
+    log_state_entry = nil
+  end
+
+  local note_template = ('%s- State %-12s from %-12s [%s]'):format(
+    indent,
+    [["]] .. new_todo .. [["]],
+    [["]] .. old_todo .. [["]],
+    Date.now():to_string()
+  )
+
 
   local is_done = item:is_done() and not was_done
   local is_undone = not item:is_done() and was_done
 
   -- State was changed in the same group (TODO NEXT | DONE)
   -- For example: Changed from TODO to NEXT
+
   if not is_done and not is_undone then
+    if log_state_entry == '!' then
+      return item:add_note({ note_template })
+    elseif log_state_entry == '@' then
+      return self:_get_note(note_template .. ' \\\\', indent, repeat_note_title):next(function(note)
+        if note then
+          return item:add_note(note)
+        else
+          return item:add_note({ note_template })
+        end
+      end)
+    elseif log_state_exit == '!' then
+      return item:add_note({ note_template })
+    elseif log_state_exit == '@' then
+      return self:_get_note(note_template .. ' \\\\', indent, repeat_note_title):next(function(note)
+        if note then
+          return item:add_note(note)
+        else
+          return item:add_note({ note_template })
+        end
+      end)
+    end
     return item
   end
 
-  local prompt_done_note = config.org_log_done == 'note'
-  local log_closed_time = config.org_log_done == 'time'
-  local indent = headline:get_indent()
+  local prompt_done_note = config.org_log_done == 'note' and log_state_entry == nil and log_state_exit == nil
+  local log_closed_time = config.org_log_done == 'time' or config.org_log_done == 'note'
 
   local closing_note_text = ('%s- CLOSING NOTE %s \\\\'):format(indent, Date.now():to_wrapped_string(false))
   local closed_title = 'Insert note for closed todo item'
@@ -447,17 +494,37 @@ function OrgMappings:_todo_change_state(direction)
 
   -- No dates with a repeater. Add closed date and note if enabled.
   if #repeater_dates == 0 then
-    local set_closed_date = prompt_done_note or log_closed_time
-    if set_closed_date then
+    if log_closed_time then
       if is_done then
-        headline:set_closed_date()
+        item:set_closed_date()
       elseif is_undone then
-        headline:remove_closed_date()
+        item:remove_closed_date()
       end
-      item = self.files:get_closest_headline()
+      -- item = self.files:get_closest_headline()
     end
 
     if is_undone or not prompt_done_note then
+      if log_state_entry == '!' then
+        return item:add_note({ note_template })
+      elseif log_state_entry == '@' then
+        return self:_get_note(note_template .. ' \\\\', indent, repeat_note_title):next(function(note)
+          if note then
+            return item:add_note(note)
+          else
+            return item:add_note({ note_template })
+          end
+        end)
+      elseif log_state_exit == '!' then
+        return item:add_note({ note_template })
+      elseif log_state_exit == '@' then
+        return self:_get_note(note_template .. ' \\\\', indent, repeat_note_title):next(function(note)
+          if note then
+            return item:add_note(note)
+          else
+            return item:add_note({ note_template })
+          end
+        end)
+      end
       return item
     end
 
@@ -469,18 +536,11 @@ function OrgMappings:_todo_change_state(direction)
   for _, date in ipairs(repeater_dates) do
     self:_replace_date(date:apply_repeater())
   end
-  local new_todo = item:get_todo()
-  self:_change_todo_state('reset')
 
-  local prompt_repeat_note = config.org_log_repeat == 'note'
+  self:_change_todo_state('reset', false, item, todos)
+
+  local prompt_repeat_note = config.org_log_repeat == 'note' and log_state_entry == nil and log_state_exit == nil
   local log_repeat_enabled = config.org_log_repeat ~= false
-  local repeat_note_template = ('%s- State %-12s from %-12s [%s]'):format(
-    indent,
-    [["]] .. new_todo .. [["]],
-    [["]] .. old_state .. [["]],
-    Date.now():to_string()
-  )
-  local repeat_note_title = ('Insert note for state change from "%s" to "%s"'):format(old_state, new_todo)
 
   if log_repeat_enabled then
     item:set_property('LAST_REPEAT', Date.now():to_wrapped_string(false))
@@ -488,8 +548,30 @@ function OrgMappings:_todo_change_state(direction)
 
   if not prompt_repeat_note and not prompt_done_note then
     -- If user is not prompted for a note, use a default repeat note
-    if log_repeat_enabled then
-      return item:add_note({ repeat_note_template })
+    if log_repeat_enabled and not log_state_entry and not log_state_exit then
+      return item:add_note({ note_template })
+    else
+      if log_state_entry == '!' then
+        return item:add_note({ note_template })
+      elseif log_state_entry == '@' then
+        return self:_get_note(note_template .. ' \\\\', indent, repeat_note_title):next(function(note)
+          if note then
+            return item:add_note(note)
+          else
+            return item:add_note({ note_template })
+          end
+        end)
+      elseif log_state_exit == '!' then
+        return item:add_note({ note_template })
+      elseif log_state_exit == '@' then
+        return self:_get_note(note_template .. ' \\\\', indent, repeat_note_title):next(function(note)
+          if note then
+            return item:add_note(note)
+          else
+            return item:add_note({ note_template })
+          end
+        end)
+      end
     end
     return item
   end
@@ -501,8 +583,12 @@ function OrgMappings:_todo_change_state(direction)
     end)
   end
 
-  return self:_get_note(repeat_note_template .. ' \\\\', indent, repeat_note_title):next(function(closing_note)
-    return item:add_note(closing_note)
+  return self:_get_note(note_template .. ' \\\\', indent, repeat_note_title):next(function(closing_note)
+      if closing_note then
+        return item:add_note(closing_note)
+      else
+        return item:add_note({ note_template })
+      end
   end)
 end
 
@@ -1047,10 +1133,10 @@ end
 ---@param direction string
 ---@param use_fast_access? boolean
 ---@return boolean
-function OrgMappings:_change_todo_state(direction, use_fast_access)
-  local headline = self.files:get_closest_headline()
+function OrgMappings:_change_todo_state(direction, use_fast_access, headline, todos)
+  -- local headline = self.files:get_closest_headline()
   local current_keyword = headline:get_todo()
-  local todos = headline.file:get_todo_keywords()
+  -- local todos = headline.file:get_todo_keywords()
   local todo_state = TodoState:new({ current_state = current_keyword, todos = todos })
   local next_state = nil
   if use_fast_access and todo_state:has_fast_access() then
